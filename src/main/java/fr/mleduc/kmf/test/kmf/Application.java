@@ -44,8 +44,6 @@ public class Application {
         final EtmMonitor monitor = EtmManager.getEtmMonitor();
         monitor.start();
 
-        final long dim1 = 20;
-        final long dim2 = 20;
         final int max = 5;
         final int itts = 1;
         for(int i = 0; i< itts; i++) {
@@ -79,9 +77,7 @@ public class Application {
 
             Promise<Object, Object, Object> firstLifeOperations = proceedLifeOperations(model, 0, lifeOperations)
                     .then((MultipleResults result) -> save(model));
-            //final List<int> jksdfjksdf = new Arr
             for (int i = 1; i < max; i++) {
-                //long start = System.currentTimeMillis();
                 EtmPoint point2 = monitor.createPoint("loop");
                 firstLifeOperations = step(model, firstLifeOperations, i);
                 point2.collect();
@@ -91,7 +87,9 @@ public class Application {
             final Promise<CellGrid, Object, Object> then1 = firstLifeOperations
                     .then((DonePipe<Object, CellGrid, Object, Object>) result -> getAllCells(model, max));
 
-            then1.then((CellGrid aaa ) -> { point.collect();  return aaa; }).done(c -> showState(max, c));
+            then1.then((CellGrid aaa ) -> { point.collect();  return aaa; }).then(result -> {
+                disconnect(model);
+            }).done(c -> showState(max, c));
         });
         System.out.println("Stop " + iterationLoop);
     }
@@ -99,7 +97,7 @@ public class Application {
     private static Promise<Object, Object, Object> step(final GolModel graph, final Promise<Object, Object, Object> promise, final long lifeI) {
         return promise
                 .then((Object result) -> getAllCells(graph, lifeI))
-                //.then(c -> {showState(lifeI, c); })
+                .then(c -> {showState(lifeI, c); })
                 .then((CellGrid result) -> doLife(result))
                 .then((List<LifeOperation> result) -> proceedLifeOperations(graph, lifeI, result))
                 .then((MultipleResults result) -> save(graph))
@@ -190,12 +188,6 @@ public class Application {
         return cell;
     }
 
-    /*private static Promise<Boolean, Object, Object> indexCell(final KGraph graph, KNode cell) {
-        final Deferred<Boolean, Object, Object> ret = new DeferredObject<>();
-        graph.index("cells", cell, new String[]{"x", "y"}, ret::resolve);
-        return ret;
-    }*/
-
     private static Deferred<Object, Object, Object> save(final GolModel model) {
         final Deferred<Object, Object, Object> ret = new DeferredObject<>();
         model.save(ret::resolve);
@@ -205,6 +197,12 @@ public class Application {
     private static Deferred<Object, Object, Object> connect(final GolModel graph) {
         final Deferred<Object, Object, Object> ret = new DeferredObject<>();
         graph.connect(ret::resolve);
+        return ret;
+    }
+
+    private static Deferred<Object, Object, Object> disconnect(final GolModel graph) {
+        final Deferred<Object, Object, Object> ret = new DeferredObject<>();
+        graph.disconnect(ret::resolve);
         return ret;
     }
 }
