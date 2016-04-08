@@ -8,17 +8,10 @@ import etm.core.monitor.EtmPoint;
 import etm.core.renderer.SimpleTextRenderer;
 import gol.GolModel;
 import gol.meta.MetaCell;
-import org.jdeferred.Deferred;
-import org.jdeferred.DeferredManager;
-import org.jdeferred.DonePipe;
-import org.jdeferred.Promise;
-import org.jdeferred.impl.DefaultDeferredManager;
-import org.jdeferred.impl.DeferredObject;
-import org.jdeferred.multiple.MasterProgress;
-import org.jdeferred.multiple.MultipleResults;
-import org.jdeferred.multiple.OneReject;
 import org.kevoree.modeling.KObject;
 import org.kevoree.modeling.memory.manager.DataManagerBuilder;
+import org.kevoree.modeling.scheduler.impl.DirectScheduler;
+import rx.Observable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -44,11 +37,13 @@ public class Application {
         final EtmMonitor monitor = EtmManager.getEtmMonitor();
         monitor.start();
 
-        final int max = 5;
+        final int max = 10000;
         final int itts = 1;
-        for(int i = 0; i< itts; i++) {
+
+        generateRange(itts).map(i -> {
             wholeProcess(monitor, max, i);
-        }
+            return null;
+        }).toBlocking().last();
 
         monitor.stop();
         monitor.render(new SimpleTextRenderer());
@@ -56,52 +51,94 @@ public class Application {
 
     }
 
-    private static void wholeProcess(final EtmMonitor monitor, final int max, final int iterationLoop) {
-        System.out.println("Start " + iterationLoop);
-        EtmPoint point = monitor.createPoint("start");
-
-        final GolModel model = new GolModel(DataManagerBuilder.buildDefault());
-        final Deferred<Object, Object, Object> connectDeferred = connect(model);
-
-        connectDeferred.then(o -> {
-            final List<LifeOperation> lifeOperations = new ArrayList<>();
-
-            lifeOperations.add(LifeOperation.newCell(0,0));
-            lifeOperations.add(LifeOperation.newCell(0,1));
-            lifeOperations.add(LifeOperation.newCell(0,2));
-            lifeOperations.add(LifeOperation.newCell(1,0));
-            lifeOperations.add(LifeOperation.newCell(1,2));
-            lifeOperations.add(LifeOperation.newCell(2,0));
-            lifeOperations.add(LifeOperation.newCell(2,1));
-            lifeOperations.add(LifeOperation.newCell(2,2));
-
-            Promise<Object, Object, Object> firstLifeOperations = proceedLifeOperations(model, 0, lifeOperations)
-                    .then((MultipleResults result) -> save(model));
-            for (int i = 1; i < max; i++) {
-                EtmPoint point2 = monitor.createPoint("loop");
-                firstLifeOperations = step(model, firstLifeOperations, i);
-                point2.collect();
-
+    private static Observable<Integer> generateRange(int itts) {
+        return Observable.create(subscriber -> {
+            for (int i = 0; i < itts; i++) {
+                subscriber.onNext(i);
             }
-
-            final Promise<CellGrid, Object, Object> then1 = firstLifeOperations
-                    .then((DonePipe<Object, CellGrid, Object, Object>) result -> getAllCells(model, max));
-
-            then1.then((CellGrid aaa ) -> { point.collect();  return aaa; }).then(result -> {
-                disconnect(model);
-            }).done(c -> showState(max, c));
+            subscriber.onCompleted();
         });
-        System.out.println("Stop " + iterationLoop);
     }
 
-    private static Promise<Object, Object, Object> step(final GolModel graph, final Promise<Object, Object, Object> promise, final long lifeI) {
-        return promise
-                .then((Object result) -> getAllCells(graph, lifeI))
-                .then(c -> {showState(lifeI, c); })
-                .then((CellGrid result) -> doLife(result))
-                .then((List<LifeOperation> result) -> proceedLifeOperations(graph, lifeI, result))
-                .then((MultipleResults result) -> save(graph))
-                ;
+    private static <T> Observable<T> streamer(final List<T> lst) {
+        return Observable.create(subscriber -> {
+            for (T t : lst) {
+                subscriber.onNext(t);
+            }
+            subscriber.onCompleted();
+        });
+    }
+
+    private static void wholeProcess(final EtmMonitor monitor, final int max, final int iterationLoop) {
+        //System.out.println("Start whole process " + iterationLoop);
+        final EtmPoint point = monitor.createPoint("start");
+        final GolModel model = new GolModel(DataManagerBuilder.create().withScheduler(new DirectScheduler()).build());
+        connect(model).map(n -> {
+            final List<LifeOperation> lifeOperations = new ArrayList<>();
+
+            lifeOperations.add(LifeOperation.newCell(0, 0));
+            lifeOperations.add(LifeOperation.newCell(0, 1));
+            lifeOperations.add(LifeOperation.newCell(0, 2));
+            lifeOperations.add(LifeOperation.newCell(1, 0));
+            lifeOperations.add(LifeOperation.newCell(1, 2));
+            lifeOperations.add(LifeOperation.newCell(2, 0));
+            lifeOperations.add(LifeOperation.newCell(2, 1));
+            lifeOperations.add(LifeOperation.newCell(2, 2));
+
+            proceedLifeOperations(model, 0, lifeOperations);
+            save(model).toBlocking().last();
+            return null;
+
+        }).switchMap(a1 -> generateRange(max)).forEach(x -> {
+            step(model, x, monitor);
+        });
+
+        getAllCells(model, max)
+                .map(tmp -> {
+                    showState(max, tmp);
+                    return tmp;
+                }).toBlocking().last();
+
+        disconnect(model)
+                .map(o -> {
+                    point.collect();
+                    return null;
+                })
+                .toBlocking().last();
+    }
+
+    private static void step(GolModel model, Integer lifeI, EtmMonitor monitor) {
+        EtmPoint point2 = monitor.createPoint("loop");
+        getAllCells(model, lifeI)
+                /*.map(tmp -> {
+                    showState(lifeI, tmp);
+                    return tmp;
+                })*/
+                .switchMap(cellGrid -> doLife(cellGrid))
+                .map(res -> {
+                    proceedLifeOperations(model, lifeI, res);
+                    return null;
+                })
+                .switchMap(o -> save(model))
+                .toBlocking().last();
+        point2.collect();
+
+    }
+
+    private static void proceedLifeOperations(GolModel model, int time, List<LifeOperation> lifeOperations) {
+        streamer(lifeOperations).switchMap(lifeOperation -> {
+            final Observable<?> ret;
+            if (lifeOperation.type == LifeOperation.LifeOperationType.New) {
+                createCell(model, time, lifeOperation.x, lifeOperation.y);
+                ret = Observable.create(subscriber -> {
+                    subscriber.onNext(null);
+                    subscriber.onCompleted();
+                });
+            } else {
+                ret = removeCell(model, time, lifeOperation.x, lifeOperation.y);
+            }
+            return ret;
+        }).toBlocking().last();
     }
 
     private static void showState(long lifeI, CellGrid c) {
@@ -109,22 +146,26 @@ public class Application {
         System.out.println(c);
     }
 
-    private static Promise<List<LifeOperation>, Object, Object> doLife(final CellGrid result) {
-        final DeferredObject<List<LifeOperation>, Object, Object> deferred = new DeferredObject<>();
-        final List<LifeOperation> lifeOperations = new GameOfLifeService().doLife(result);
-        deferred.resolve(lifeOperations);
-        return deferred;
+    private static Observable<List<LifeOperation>> doLife(final CellGrid result) {
+        return Observable.create(subscriber -> {
+            final List<LifeOperation> lifeOperations = new GameOfLifeService().doLife(result);
+            subscriber.onNext(lifeOperations);
+            subscriber.onCompleted();
+        });
     }
 
-    private static Deferred<KObject[], Object, Object> getAllNodes(final GolModel graph, final long time) {
-        final Deferred<KObject[], Object, Object> ret = new DeferredObject<>();
-        graph.findAll(MetaCell.getInstance(), 0, time, ret::resolve);
-        return ret;
+    private static Observable<KObject[]> getAllNodes(final GolModel graph, final long time) {
+        return Observable.create(subscriber -> {
+            graph.findAll(MetaCell.getInstance(), 0, time, kObjects -> {
+                subscriber.onNext(kObjects);
+                subscriber.onCompleted();
+            });
+
+        });
     }
 
-    private static Promise<CellGrid, Object, Object> getAllCells(final GolModel graph, final long time) {
-        final DeferredObject<CellGrid, Object, Object> ret = new DeferredObject<>();
-        getAllNodes(graph, time).then(result -> {
+    private static Observable<CellGrid> getAllCells(final GolModel graph, final long time) {
+        return getAllNodes(graph, time).map(result -> {
             final List<Cell> lstCells = Arrays.asList(result).stream()
                     .map(kNode -> {
                         final long x = (long) kNode.get(MetaCell.ATT_X);
@@ -132,53 +173,32 @@ public class Application {
                         return new Cell(x, y);
                     })
                     .collect(Collectors.toList());
-            ret.resolve(new CellGrid(lstCells));
+            return new CellGrid(lstCells);
         });
-        return ret;
     }
 
-    private static Promise<MultipleResults, OneReject, MasterProgress> proceedLifeOperations(final GolModel model, final long time, final List<LifeOperation> lifeOperations) {
-        final Deferred[] res = new Deferred[lifeOperations.size()];
-        lifeOperations.stream().map(lifeOperation -> {
-            final Promise<Object, Object, Object> ret;
-            if (lifeOperation.type == LifeOperation.LifeOperationType.New) {
-                // Life
-                final gol.Cell cell = createCell(model, time, lifeOperation.x, lifeOperation.y);
-                final DeferredObject<Object, Object, Object> tmp = new DeferredObject<>();
-                tmp.resolve(null);
-                ret = tmp;
-            } else {
-                // Death
-                ret = removeCell(model, time, lifeOperation.x, lifeOperation.y);
-            }
-            return ret;
-        }).collect(Collectors.toList()).toArray(res);
 
-        final DeferredManager barrierIndexes = new DefaultDeferredManager();
-        return barrierIndexes.when(res);
+    private static Observable<Object> removeCell(final GolModel graph, final long saveTime, final long x, final long y) {
+        return lookupCellByCoordinates(graph, saveTime, x, y).switchMap(Application::detachCell);
     }
 
-    private static Promise<Object, Object, Object> removeCell(final GolModel graph, final long saveTime, final long x, final long y) {
-        final Promise<Object, Object, Object> res = lookupCellByCoordinates(graph, saveTime, x, y)
-                .then((DonePipe<KObject, Object, Object, Object>) cell -> {
-                    final Deferred<Object, Object, Object> ret = new DeferredObject<>();
-
-                    cell.detach(ret::resolve);
-                    /*if (cell == null) {
-                        System.out.println("Cell(" + x + ", " + y + ") not found");
-                    } else {
-                        graph.unindex("cells", cell, new String[]{"x", "y"}, ret::resolve);
-                    }*/
-                    return ret;
-                });
-        return res;
+    private static Observable<Object> detachCell(KObject kObject) {
+        return Observable.create(subscriber -> {
+            kObject.detach(o -> {
+                subscriber.onNext(o);
+                subscriber.onCompleted();
+            });
+        });
     }
 
-    private static Deferred<KObject, Object, Object> lookupCellByCoordinates(final GolModel model, final long saveTime, final long x, final long y) {
-        final Deferred<KObject, Object, Object> deferred = new DeferredObject<>();
+    private static Observable<KObject> lookupCellByCoordinates(final GolModel model, final long saveTime, final long x, final long y) {
         final String query = "x=" + x + ",y=" + y;
-        model.find(MetaCell.getInstance(), 0, saveTime, query, deferred::resolve);
-        return deferred;
+        return Observable.create(subscriber -> {
+            model.find(MetaCell.getInstance(), 0, saveTime, query, kObject -> {
+                subscriber.onNext(kObject);
+                subscriber.onCompleted();
+            });
+        });
     }
 
     private static gol.Cell createCell(final GolModel graph, final long time, final long x, final long y) {
@@ -188,21 +208,30 @@ public class Application {
         return cell;
     }
 
-    private static Deferred<Object, Object, Object> save(final GolModel model) {
-        final Deferred<Object, Object, Object> ret = new DeferredObject<>();
-        model.save(ret::resolve);
-        return ret;
+    private static Observable<Object> save(final GolModel model) {
+        return Observable.create(subscriber -> {
+            model.save(o -> {
+                subscriber.onNext(o);
+                subscriber.onCompleted();
+            });
+        });
     }
 
-    private static Deferred<Object, Object, Object> connect(final GolModel graph) {
-        final Deferred<Object, Object, Object> ret = new DeferredObject<>();
-        graph.connect(ret::resolve);
-        return ret;
+    private static Observable<Object> connect(final GolModel graph) {
+        return Observable.create(subscriber -> {
+            graph.connect(o -> {
+                subscriber.onNext(o);
+                subscriber.onCompleted();
+            });
+        });
     }
 
-    private static Deferred<Object, Object, Object> disconnect(final GolModel graph) {
-        final Deferred<Object, Object, Object> ret = new DeferredObject<>();
-        graph.disconnect(ret::resolve);
-        return ret;
+    private static Observable<Object> disconnect(final GolModel graph) {
+        return Observable.create(subscriber -> {
+            graph.disconnect(o -> {
+                subscriber.onNext(o);
+                subscriber.onCompleted();
+            });
+        });
     }
 }

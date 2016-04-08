@@ -19,9 +19,9 @@
             <version>${kmf.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.jdeferred</groupId>
-            <artifactId>jdeferred-core</artifactId>
-            <version>1.2.4</version>
+            <groupId>io.reactivex</groupId>
+            <artifactId>rxjava</artifactId>
+            <version>1.1.2</version>
         </dependency>
         <dependency>
             <groupId>fm.void.jetm</groupId>
